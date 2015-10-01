@@ -3,17 +3,25 @@ package t1common;
 import java.rmi.RemoteException;
 import java.rmi.server.UnicastRemoteObject;
 import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.Queue;
 import java.util.Random;
+import java.util.Timer;
+import java.util.TimerTask;
+
+import com.sun.beans.finder.FieldFinder;
 
 class Player
 {
 	public String m_name;
 	public int 	  m_id;
+	public String m_endOfGameMessage;
 	
 	public Player (String name, int id)
 	{
 		m_name = name;
 		m_id   = id;
+		m_endOfGameMessage = "None";
 	}
 }
 
@@ -21,14 +29,50 @@ enum GameState  { Free, Playing }
 
 class Game
 {	
-	final  int BOARD_SIZE = 5;
+	final int BOARD_SIZE 	  = 5;
+	final int NUMBER_OF_BOMBS = 5;
+	final int TIMER_DELAY     = 5000;
+	final int TIMER_INTERVAL  = 1000;
+	final int TIMER_MAXTIME   = 120;
+	
+	public CampoMinado m_mainGame;
 	public Player m_owner;
 	public GameState m_gameState;
 	public int[][] m_board;
 	public int[][] m_boardMask;
+	public int     m_numberOfFreeSpaces;
+
+	public Timer m_timer;
+	public int   m_timerTotalTime;
 	
-	public Game()
+	private class BoardPosition
 	{
+		public int m_y = 0;
+		public int m_x = 0;
+		
+		public BoardPosition(int y, int x)
+		{
+			m_y = y;
+			m_x = x;
+		}
+		
+		@Override
+		public boolean equals(Object obj)
+		{
+			if(obj == null)
+				return false;
+			if(getClass() != obj.getClass())
+				return false;
+			final BoardPosition other = (BoardPosition)obj;
+			if((this.m_x == other.m_x) && (this.m_y == other.m_y))
+				return true;
+			return false;
+		}
+	}
+	
+	public Game(CampoMinado main)
+	{
+		m_mainGame  = main;
 		m_owner     = null;
 		m_gameState = GameState.Free;
 	}
@@ -39,7 +83,68 @@ class Game
 		
 		CreateBoard();
 		
-		//PrintBoard(m_board);
+		ResetTimer();
+		
+		m_numberOfFreeSpaces = (BOARD_SIZE * BOARD_SIZE) - NUMBER_OF_BOMBS;
+		
+		m_timer = new Timer();
+		
+		m_timer.scheduleAtFixedRate(new TimerTask()
+				{
+					public void run()
+					{
+						m_timerTotalTime++;
+						
+						if(m_timerTotalTime >= TIMER_MAXTIME)
+						{
+							m_owner.m_endOfGameMessage = "Timer exceeded! Player disconected";
+							m_mainGame.TerminateGame(m_owner.m_id);
+						}
+					}
+				},TIMER_DELAY, TIMER_INTERVAL);
+		
+		PrintBoard(m_board);
+	}
+	
+	public void GameOver()
+	{
+		m_owner     = null;
+		m_gameState = GameState.Free;
+		m_timer.cancel();
+		m_timer     = null;
+	}
+	
+	public void ResetTimer()
+	{
+		m_timerTotalTime = 0;
+		
+		System.out.println("timer reset!");
+	}
+	
+	public int OpenBoard(int y, int x)
+	{
+		ResetTimer();
+		
+		if(m_boardMask[y][x] == -1) //posicao ja aberta
+			return -1;
+		if(m_boardMask[y][x] == 1)  //posicao marcada
+			return -2;
+		
+		if(m_board[y][x] == -1)     //BOOM
+		{
+			m_boardMask[y][x] = -1;
+			return 0;
+		}
+		if(m_board[y][x] > 0)       //Quase
+		{
+			m_boardMask[y][x] = -1;
+			m_numberOfFreeSpaces--;
+			return 1;
+		}
+		
+		FloodOpenBoard(y, x);       //Vazio
+		
+		return 1;
 	}
 	
 	private void CreateBoard()
@@ -50,7 +155,7 @@ class Game
 		//sort bombs
 		int numBombs = 0, bombX = 0, bombY = 0;
 		Random rand = new Random();
-		while(numBombs < 5)
+		while(numBombs < NUMBER_OF_BOMBS)
 		{
 			bombX = rand.nextInt(BOARD_SIZE);
 			bombY = rand.nextInt(BOARD_SIZE);
@@ -95,6 +200,45 @@ class Game
 		return numBombs;
 	}
 	
+	private void FloodOpenBoard(int y, int x)
+	{
+		Queue<BoardPosition> openList   = new LinkedList<BoardPosition>();
+		Queue<BoardPosition> closedList = new LinkedList<BoardPosition>();
+		
+		openList.add(new BoardPosition(y, x));
+		
+		while(!openList.isEmpty())
+		{
+			BoardPosition currentBoardPos = openList.remove();
+			closedList.add(currentBoardPos);
+			
+			if(m_board[currentBoardPos.m_y][currentBoardPos.m_x] == -1)
+				continue;
+			
+			m_boardMask[currentBoardPos.m_y][currentBoardPos.m_x] = -1;
+			m_numberOfFreeSpaces--;
+			
+			if(m_board[currentBoardPos.m_y][currentBoardPos.m_x] > 0)
+				continue;
+			
+			for(int yy = -1; yy < 2; yy++)
+			{
+				for(int xx = -1; xx < 2; xx++)
+				{
+					int yyy = currentBoardPos.m_y + yy;
+					int xxx = currentBoardPos.m_x + xx;
+					
+					if(yyy < 0 || xxx < 0 || yyy >= BOARD_SIZE || xxx >= BOARD_SIZE)
+						continue;
+					
+					BoardPosition boardPos = new BoardPosition(yyy, xxx);
+					if(!openList.contains(boardPos) && !closedList.contains(boardPos))
+						openList.add(boardPos);
+				}
+			}
+		}
+	}
+	
 	public static void PrintBoard(int[][] board)
 	{
 		System.out.println("---------------------------");
@@ -117,6 +261,7 @@ public class CampoMinado extends UnicastRemoteObject implements CampoMinadoInter
 	private int m_playerCode;
 	
 	private ArrayList<Game> m_games;
+	public ArrayList<Player> m_playerCemetery;
 	
 	private static final long serialVersionUID = -513804057617910473L;
 	
@@ -126,8 +271,9 @@ public class CampoMinado extends UnicastRemoteObject implements CampoMinadoInter
 		m_playerCode = 0;
 		for(int i = 0; i < MAX_PARTIDAS; i++)
 		{
-			m_games.add(new Game());
+			m_games.add(new Game(this));
 		}
+		m_playerCemetery = new ArrayList<Player>();
 	}
 	
 	@Override
@@ -147,7 +293,7 @@ public class CampoMinado extends UnicastRemoteObject implements CampoMinadoInter
 		Game freeGame = GetFreeGame();
 		
 		if(freeGame == null)
-			throw new RemoteException("Game is Null! :(");
+			throw new RemoteException("FreeGame is Null! :(");
 		
 		freeGame.m_owner = newPlayer;
 
@@ -158,8 +304,25 @@ public class CampoMinado extends UnicastRemoteObject implements CampoMinadoInter
 
 	@Override
 	public int enviaJogada(int id, int linha, int coluna) throws RemoteException {
-		// TODO Auto-generated method stub
-		return 0;
+		
+		Game game = GetPlayerGame(id);
+		
+		if(game == null)
+			return -7;
+		
+		int result = game.OpenBoard(coluna, linha);
+		
+		//BOMB EXPLODED
+		if(result <= 0)
+			return result;
+		//WIN!
+		if(game.m_numberOfFreeSpaces <= 0)
+		{
+			//DO STUFF:
+			return 2;
+		}
+		
+		return 1;
 	}
 
 	@Override
@@ -180,7 +343,7 @@ public class CampoMinado extends UnicastRemoteObject implements CampoMinadoInter
 		Game playerGame = GetPlayerGame(id);
 		
 		if(playerGame == null)
-			throw new RemoteException("Cannot find player game! :(");
+			return null;
 		
 		return GetPrintableBoard(playerGame.m_board, playerGame.m_boardMask);
 	}
@@ -200,7 +363,10 @@ public class CampoMinado extends UnicastRemoteObject implements CampoMinadoInter
 					if(board[y][x] == -1 )
 						content = 'b';
 					else
-						content = (char)board[y][x];
+					{
+						String temp = "" + board[y][x];
+						content = temp.charAt(0);
+					}
 				}
 				else if(boardMask[y][x] == 1)
 					content = 'm';
@@ -246,6 +412,45 @@ public class CampoMinado extends UnicastRemoteObject implements CampoMinadoInter
 	private synchronized int GetPlayerCode()
 	{
 		return m_playerCode++;
+	}
+	
+	public synchronized boolean TerminateGame(int playerId)
+	{
+		Game game = GetPlayerGame(playerId);
+				
+		if(game == null)
+			return false;
+		
+		System.out.println("Game of " + game.m_owner.m_name + " is now over!");
+		
+		m_playerCemetery.add(game.m_owner);
+		
+		game.GameOver();
+		
+		return true;
+	}
+
+	@Override
+	public String getErrorMessage(int id) throws RemoteException {
+		
+		for(Player p : m_playerCemetery)
+			if(p.m_id == id)
+				return p.m_endOfGameMessage;
+		
+		return "Erro de comunicacao!";
+	}
+
+	@Override
+	public boolean keepAlive(int id) throws RemoteException {
+		// TODO Auto-generated method stub
+		Game game = GetPlayerGame(id);
+		
+		if (game == null)
+			return false;
+		
+		game.ResetTimer();
+		
+		return true;
 	}
 
 }

@@ -32,5 +32,9 @@ public interface CampoMinadoInterface extends Remote {
     // -1 = identificador invalido
     // -2 = jogada invalida
     // -3 = bomba não foi marcada anteriormente
+    
+    public String getErrorMessage(int id) throws RemoteException;
+    
+    public boolean keepAlive(int id) throws RemoteException;
 
 }
